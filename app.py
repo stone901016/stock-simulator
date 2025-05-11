@@ -45,4 +45,6 @@ def stock_sync():
     return jsonify(simulate_sync(data.get("symbol"), data.get("years"), data.get("simulations")))
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
