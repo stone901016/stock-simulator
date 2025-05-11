@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>股票走勢模擬預測</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="container py-4">
+  <h1 class="mb-4 text-center">股票走勢模擬預測</h1>
+  <form id="simForm" class="row g-3 mb-4">
+    <div class="col-md-4">
+      <label for="symbol" class="form-label">股票代號</label>
+      <input id="symbol" class="form-control" placeholder="例如：AAPL 或 2330.TW" required/>
+    </div>
+    <div class="col-md-4">
+      <label for="years" class="form-label">模擬年數</label>
+      <select id="years" class="form-select">
+        <option value="1">1 年</option>
+        <option value="5">5 年</option>
+        <option value="10">10 年</option>
+        <option value="20">20 年</option>
+      </select>
+    </div>
+    <div class="col-md-4">
+      <label for="simulations" class="form-label">模擬次數</label>
+      <select id="simulations" class="form-select">
+        <option value="100">100 次</option>
+        <option value="1000">1,000 次</option>
+        <option value="10000">10,000 次</option>
+        <option value="100000">100,000 次</option>
+      </select>
+    </div>
+    <div class="col-12 text-end">
+      <button type="submit" class="btn btn-primary px-4">開始模擬</button>
+    </div>
+  </form>
+
+  <div id="resultSection" style="display:none;">
+    <p id="expected" class="h5 mb-3"></p>
+    <canvas id="simChart" class="mb-4" height="200"></canvas>
+    <canvas id="histChart" height="200"></canvas>
+    <div id="summary" class="mt-4"></div>
+  </div>
+
+  <script>
+    let simChart = null;
+    let histChart = null;
+
+    document.getElementById('simForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      document.getElementById('expected').innerText = '模擬中，請稍候...';
+      document.getElementById('resultSection').style.display = 'block';
+
+      const symbol = document.getElementById('symbol').value.trim();
+      const years = document.getElementById('years').value;
+      const sims = document.getElementById('simulations').value;
+
+      try {
+        const res = await fetch('/api/stock_sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol, years, simulations: sims })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        document.getElementById('expected').innerText = `預期價格：${data.expected_price}`;
+
+        if (simChart) simChart.destroy();
+        if (histChart) histChart.destroy();
+
+        simChart = new Chart(
+          document.getElementById('simChart').getContext('2d'),
+          {
+            type: 'line',
+            data: getLineData(data.simulations),
+            options: {
+              responsive: true,
+              plugins: {
+                title: { display: true, text: '模擬走勢（前 20 條路徑與平均）' },
+                legend: { position: 'top' }
+              },
+              scales: {
+                x: { title: { display: true, text: '交易日（天）' } },
+                y: { title: { display: true, text: '模擬價格（元）' } }
+              }
+            }
+          }
+        );
+
+        histChart = new Chart(
+          document.getElementById('histChart').getContext('2d'),
+          {
+            type: 'bar',
+            data: getHistData(data.simulations),
+            options: {
+              responsive: true,
+              plugins: {
+                title: { display: true, text: '模擬終值分佈' },
+                legend: { display: false }
+              },
+              scales: {
+                x: { title: { display: true, text: '價格區間（元）' } },
+                y: { title: { display: true, text: '次數' } }
+              }
+            }
+          }
+        );
+
+        updateSummary(data.simulations, sims);
+
+      } catch (err) {
+        document.getElementById('expected').innerText = `錯誤：${err.message}`;
+      }
+    });
+
+    function getLineData(s) {
+      const labels = s[0].map((_, i) => i + 1);
+      const datasets = s.slice(0, 20).map((a, i) => ({
+        label: `模擬${i + 1}`,
+        data: a,
+        fill: false
+      }));
+      datasets.push({
+        label: '平均',
+        data: s[0].map((_, i) => s.reduce((sum, x) => sum + x[i], 0) / s.length),
+        borderDash: [5, 5],
+        fill: false
+      });
+      return { labels, datasets };
+    }
+
+    function getHistData(s) {
+      const f = s.map(a => a[a.length - 1]);
+      const bins = 20;
+      const min = Math.min(...f);
+      const max = Math.max(...f);
+      const step = (max - min) / bins;
+      const counts = Array(bins).fill(0);
+      f.forEach(v => counts[Math.min(Math.floor((v - min) / step), bins - 1)]++);
+      const labels = counts.map((_, i) => `${(min + i * step).toFixed(0)}~${(min + (i + 1) * step).toFixed(0)}`);
+      return { labels, datasets: [{ label: '次數', data: counts }] };
+    }
+
+    function updateSummary(simulations, totalRuns) {
+      const finals = simulations.map(a => a[a.length - 1]);
+      const mean = (finals.reduce((s, v) => s + v, 0) / finals.length).toFixed(2);
+      const sorted = finals.slice().sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)].toFixed(2);
+      const min = sorted[0].toFixed(2);
+      const max = sorted[sorted.length - 1].toFixed(2);
+      const p05 = sorted[Math.floor(0.05 * sorted.length)].toFixed(2);
+      const p95 = sorted[Math.floor(0.95 * sorted.length)].toFixed(2);
+      const html = `
+        <h5 class="mt-4">模擬結果摘要（共 ${totalRuns} 次）</h5>
+        <table class="table table-sm">
+          <thead><tr><th>統計量</th><th>數值（元）</th></tr></thead>
+          <tbody>
+            <tr><td>平均終值</td><td>${mean}</td></tr>
+            <tr><td>中位數</td><td>${median}</td></tr>
+            <tr><td>最小值</td><td>${min}</td></tr>
+            <tr><td>最大值</td><td>${max}</td></tr>
+            <tr><td>5% 分位</td><td>${p05}</td></tr>
+            <tr><td>95% 分位</td><td>${p95}</td></tr>
+          </tbody>
+        </table>
+        <div class="alert alert-info">
+          <strong>研究員觀點：</strong>根據以上模擬，若以 ${simulations.length} 條路徑估計，未來 ${document.getElementById('years').value} 年後預期價格約為 ${mean} 元，95% 信賴區間介於 ${p05}–${p95} 元，顯示風險與報酬分佈情形，供進一步策略擬定參考。
+        </div>
+      `;
+      document.getElementById('summary').innerHTML = html;
+    }
+  </script>
+</body>
+</html>
